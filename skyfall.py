@@ -247,8 +247,87 @@ def linkify(filename: str) -> str:
     """
     
     return f"\033]8;;file://localhost{os.path.realpath(filename)}\033\\{filename}\033]8;;\033\\"
-    
-        
+
+
+def handle_post(action: dict, actor: str= ""):
+    pp = pprint.PrettyPrinter(indent=4)
+    print(f"     > {actor} Skeeted:")
+    print("")
+    formatted = re.sub('\n', '    > ',action['text'])
+    print(f"     > {formatted}")
+    print("")
+    if 'reply' in action:
+        # This is a reply
+        print(f"     > In reply to: {action['reply']['parent']['uri']}")
+        if action['reply']['parent']['uri'] != action['reply']['root']['uri']:
+            print(f"     > In thread: {action['reply']['root']['uri']}")
+    for facet in action.get('facets', []):
+        # It has a link or something. Facest have text ranges and a
+        # collection of features.
+        for feature in facet.get('features', []):
+            if feature['$type'] == 'app.bsky.richtext.facet#link':
+                print(f"     > With link to: {feature['uri']}")
+            else:
+                print("    > With unknown feature:")
+                print("    > ",re.sub("\n", "    > ",pp.pformat(feature)))
+    if 'embed' in action:
+        # It comes with a file or something.
+        embed = action['embed']
+        if embed['$type'] == 'app.bsky.embed.images':
+            print("    > With images:")
+            for image in embed['images']:
+                if image.get('alt', False):
+                    print(f"    >   {image['alt']}")
+        elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
+            print(f"    > As a quote-skeet of: {embed['record']['uri']}")
+        elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
+            print(f"     > As a quote-skeet with media of: {embed['record']['uri']}")
+        else:
+            print("    > With unknown embed:")
+            print("    > ",re.sub("\n", "    > ",pp.pformat(embed)))
+
+def get_and_dump_record(db: dict, uri: str, cid: str, agent: Optional[BskyAgent] = None, out_dir: Optional[str] = None):
+    pp = pprint.PrettyPrinter(indent=4)
+    try:
+        did, nsi, rkey = re.split("/", re.sub("^at://", "", uri))
+    except Exception as e:
+        print('    > Error getting record. %s' % e.read())
+        return
+    if cid not in db:
+        try:
+            car_filename = os.path.join(out_dir, cid + '.car')
+            if not os.path.exists(car_filename):
+                car_bytes = agent.com.atproto.sync.get_record(did=did, collection=nsi, rkey=rkey)
+                os.makedirs(out_dir, exist_ok=True)
+                
+                open(car_filename, 'wb').write(car_bytes)
+                # Drop from memory
+                del car_bytes
+            newdb = decode_car_of_dag_cbor(open(car_filename, 'rb'))
+            db.update(newdb)
+        except Exception as e:
+            # Print the response body
+            print('    > Error getting record. %s' % e.read())
+            return
+    pp = pprint.PrettyPrinter(indent=4)
+
+    action = db.get(cid, False)
+    if not action:
+        print(f"{uri} not found")
+        return
+    if '$type' not in action:
+        print("    > Not an action")
+        return
+    schema = action['$type']
+    if schema == 'app.bsky.feed.post':
+        handle_post(action, actor=did)
+    elif schema == 'app.bsky.feed.repost':
+        print(f"    > {did} Reskeeted: {action['subject'].get('uri')}")
+    else:
+        print(f'    > {did} Unknown action: {schema}')
+        pp.pprint(action)
+
+
 def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] = None, out_dir: Optional[str] = None, blob_delay: float = 0.0):
     """
     Dump a Bluesky social action (post, like, profile, etc.).
@@ -275,13 +354,16 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
         print("")
         print(action.get('description'))
         print("")
+        '''
         if action.get('avatar') and agent:
             # We can fetch an avatar
             filename = dump_blob(agent, actor_did, action['avatar'], "avatar", out_dir, blob_delay)
             if filename:
                 print(f"Saved avatar to {linkify(filename)}")
+        '''
     elif schema == 'app.bsky.feed.like':
         print(f"Liked post: {action['subject']['uri']}")
+        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'], agent=agent, out_dir=out_dir)
     elif schema == 'app.bsky.feed.post':
         print("Skeeted:")
         print("")
@@ -290,8 +372,10 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
         if 'reply' in action:
             # This is a reply
             print(f"In reply to: {action['reply']['parent']['uri']}")
+            get_and_dump_record(db, uri=action['reply']['parent']['uri'], cid=action['reply']['parent']['cid'], agent=agent, out_dir=out_dir)
             if action['reply']['parent']['uri'] != action['reply']['root']['uri']:
                 print(f"In thread: {action['reply']['root']['uri']}")
+                get_and_dump_record(db, uri=action['reply']['root']['uri'], cid=action['reply']['root']['cid'], agent=agent, out_dir=out_dir)
         for facet in action.get('facets', []):
             # It has a link or something. Facest have text ranges and a
             # collection of features.
@@ -305,21 +389,29 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
             # It comes with a file or something.
             embed = action['embed']
             if embed['$type'] == 'app.bsky.embed.images':
-                print("With images:")
+                print("With images")
+                '''
                 if agent:
                     for image in embed['images']:
                         filename = dump_blob(agent, actor_did, image['image'], image.get('alt') or "image", out_dir, blob_delay)
                         if filename:
                             print(f"Saved image to {linkify(filename)}")
+                '''
+                for image in embed['images']:
+                    if image.get('alt', False):
+                        print("  ", image['alt'])
             elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
+                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'], agent=agent, out_dir=out_dir)
             elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
-                print(f"As a quote-skeet with media of: {embed['record']['uri']}") 
+                print(f"As a quote-skeet with media of: {embed['record']['uri']}")
+                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'], agent=agent, out_dir=out_dir)
             else:
                 print("With unknown embed:")
                 pp.pprint(embed)
     elif schema == 'app.bsky.feed.repost':
         print(f"Reskeeted: {action['subject'].get('uri')}")
+        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'], agent=agent, out_dir=out_dir)
     elif schema == 'app.bsky.graph.block':
         print(f"Blocked: {action['subject']}")
     elif schema == 'app.bsky.graph.follow':
@@ -327,7 +419,7 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
     else:
         print(f'Unknown action: {schema}')
         pp.pprint(action)
-                
+
 def dump_repo(db: dict, root_cid: CID, agent: Optional[BskyAgent] = None, out_dir: Optional[str] = None, blob_delay: float = 0.0):
     """
     Given a repo with its root in the header, traverse it.
@@ -360,7 +452,8 @@ def dump_repo(db: dict, root_cid: CID, agent: Optional[BskyAgent] = None, out_di
             dump_action(db, actor_did, v, agent, out_dir, blob_delay)
         else:
             print(f"Unknown key: {k}")
-            
+
+
 def decode_json(response: bytes) -> dict:
     """
     Decode JSON bytes to a dict structure.
@@ -418,7 +511,7 @@ def main():
             did_response = decode_json(agent.com.atproto.identity.resolve_handle(handle=repo))
             did = did_response['did']
             print(f"Resolved {repo} to {did}")
-            
+        
         print("Get HEAD of repo")
         head_response = decode_json(agent.com.atproto.sync.get_head(did=did))
         head_root = CID(head_response['root'])
