@@ -435,7 +435,7 @@ class SyncingDatastore(DiskDatastore):
         self.put_blob(actor_did, blob_cid, mime_type, blob_data)
         
         if self.blob_delay > 0:
-            logger.info(f"Waiting for {blob_delay} seconds after retrieving new blob")
+            logger.info(f"Waiting for {self.blob_delay} seconds after retrieving new blob")
             # Wait to avoid annoying the server
             time.sleep(self.blob_delay)
         
@@ -594,7 +594,7 @@ def dump_action(db: dict, actor_did: str, cid: CID):
             # collection of features.
             for feature in facet.get('features', []):
                 if feature['$type'] == 'app.bsky.richtext.facet#link':
-                    print(f"With link to: {feature['uri']}")
+                    print(f"With link to: {linkify(feature['uri'], feature['uri'])}")
                 else:
                     print("With unknown feature:")
                     pp.pprint(feature)
@@ -726,6 +726,8 @@ def main():
         # Use a local data store only
         data_store = DiskDatastore(options.out_dir)
     else:
+        logger.info(f"Using API: {options.server}")
+        
         # Make an API client
         agent = BskyAgent(service=options.server)
         
