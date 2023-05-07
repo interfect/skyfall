@@ -31,10 +31,10 @@ Enjoy(?) the future of social media today!
 
 * You may want to send the output to a file.
 * If you want to talk to a server othern than Jack Dorsey's™ Bluesky™, use the `--server` option with an HTTP URL.
-* Embedded images and the whole target profile's CAR archive will be dumped in the current directory by default. TO put them somewhere else, use the `--out_dir` option.
+* Embedded images and the whole target profile's CAR archive will be dumped in the current directory by default. To put them somewhere else, use the `--out_dir` option.
 * You can re-load the CAR file by passing it to the script again, without re-downloading it.
 * Use your powers for good, not evil. Bluesky as a community remains invite-only; things people posted there are possibly not yet intended to be widely distributed on the open Internet. This tool dumps whole repos because I was too lazy to write a UI, not so you can steal them and put them up for Google. Be respectful.
-* If you get too many(?) embeds too fast(?) (see the `--blob_delay` option), you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`
+* If you get too many(?) embeds too fast(?) (see the `--blob_delay` option), you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. See above point about being respectful, and maybe get a real client?
 * Information comes out in internal storage order: profile, likes, posts, blocks, follows. This is because I only barely got the Merkle Search Tree iterator working and did not want to implement the RocksDB-style range search on keys that you are really supposed to use.
 
 ## How does this work?
