@@ -6,7 +6,6 @@ import io
 import os
 import time
 import sys
-import base64
 import pprint
 import argparse
 from typing import Any, Optional, Tuple, Iterator
@@ -21,6 +20,12 @@ try:
     import cbor2
 except ImportError:
     print("Error: install the leb128 module: pip install leb128")
+    sys.exit(1)
+
+try:
+    import multibase
+except ImportError:
+    print("Error: install the multibase module: pip install multibase")
     sys.exit(1)
 
 try:
@@ -47,8 +52,16 @@ class CID(str):
         """
         Decode a CID represented as raw, non-0-prefixed bytes. 
         """
-        return CID('b' + base64.b32encode(cid_bytes).decode('utf-8').lower().rstrip('='))
-
+        return CID('b' + multibase.encode('base32', cid_bytes).decode('utf-8'))
+        
+    @staticmethod
+    def encode_bytes(cid: "CID") -> bytes:
+        """
+        Encode a CID to raw, non-0-prefixed bytes. 
+        """
+        
+        return multibase.decode('base32', cid[1:].encode('utf-8'))
+        
     @staticmethod
     def decode_reader(stream) -> Tuple["CID", int]:
         """
@@ -106,13 +119,28 @@ class CID(str):
         # Convert bytes of the CID to a string
         return CID.decode_reader(cid_stream)[0]
         
-def decode_dag_cbor(data: bytes):
+    @staticmethod
+    def default_encoder(encoder, value):
+        """
+        CBOR encoding hook for CIDs to give then tag 42.
+        """
+        encoder.encode(cbor2.CBORTag(42, b'\x00' + ))
+        
+def decode_dag_cbor(data: bytes) -> dict:
     """
     Decode IPLD DAG-CBOR format to Python objects.
     IPLD links are decoded as CID objects containing the string CID linked to.
     """
     
     return cbor2.decoder.loads(data, tag_hook=CID.tag_hook)
+    
+def encode_dag_cbor(data: dict) -> bytes:
+    """
+    Encode IPLD DAG-CBOR format from Python objects. CID objects will be stored
+    as IPLD links with tag 42.
+    """
+    
+    return cbor2.encoder.dumps(data, default_encoder=CID.default_encoder)
     
 def decode_car_of_dag_cbor(stream) -> dict:
     """
@@ -140,6 +168,62 @@ def decode_car_of_dag_cbor(stream) -> dict:
         result[cid_text] = decode_dag_cbor(item[cid_byte_length:])
         
     return result
+    
+class Datastore:
+    """
+    Disk-backed storage for blocks (of repos) and blobs.
+    """
+    
+    def __init__(self, root_dir: str):
+        """
+        Make or connect to the data store at the given root directory.
+        """
+        
+        self.root_dir = root_dir
+    
+    def _get_block_path(self, poster_did: str, block_cid: CID) -> str:
+        """
+        Get the path at which a block would be stored, for the given poster.
+        """
+        
+        # Make the DID into a directory name
+        did_path = re.sub("[^A-Za-z0-9._-]", "_", poster_did)
+        
+        # Make the CID into a directory hierarchy
+        cid_breaks = [0, 4, 8, 12, len(block_cid)]
+        cid_parts = [block_cid[cid_breaks[i]:cid_breaks[i+1]] for i in range(len(cid_breaks) - 1)]
+        
+        # String it all together
+        parts = [self.root_dir, did_path] + cid_parts
+        return os.path.join(*parts) 
+    
+    def get_block(self, poster_did: str, block_cid: CID) -> Optional[dict]:
+        """
+        Get the decoded block from the repo for the given account, with the
+        given CID, or None if it is not stored.
+        """
+        
+        block_path = self._get_block_path(poster_did, block_cid)
+        
+        if os.path.exists(block_path):
+            return decode_dag_cbor(open(block_path, 'rb').read())
+            
+    def put_block(self, poster_did: str, block_cid: CID, block_data: dict):
+        """
+        Save a downloaded block from a repo.
+        """
+        
+        block_path = self._get_block_path(poster_did, block_cid)
+        
+        if os.path.exists(block_path):
+            # Already have it
+            return
+            
+        os.makedirs(os.path.dirname(block_path), exist_ok=True)
+        open(block_path, 'wb').write(encode_dag_cbor(block_data))
+            
+        
+            
     
 class MerkleSearchTree:
     """

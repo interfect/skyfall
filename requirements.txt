@@ -1,3 +1,4 @@
 cbor2>=5.4.6,<6
 leb128>=1.0.5,<2
+py-multibase>=1.0.3,<2
 chitose==0.0.2
