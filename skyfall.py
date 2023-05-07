@@ -363,7 +363,7 @@ class SyncingDatastore(DiskDatastore):
     server if it is not available locally.
     """
     
-    def __init__(self, root_dir: str, agent: BskyAgent, blob_delay: float = 30, skip_blobs: bool = False):
+    def __init__(self, root_dir: str, agent: BskyAgent, blob_delay: float = 0.0, skip_blobs: bool = False):
         """
         Make a data store storing data at the given path, and using the given agent to fetch unavailable data.
         
@@ -509,13 +509,44 @@ def dump_blob_object(db: Datastore, actor_did: str, blob_object: dict) -> Option
     
     return db.get_blob_file(actor_did, blob_cid, blob_mime)
     
-def linkify(filename: str) -> str:
+def linkify(href: str, text: str) -> str:
     """
-    Make an OSC-8 link of a filename.
+    Make an OSC-8 link to a URL.
     """
     
-    return f"\033]8;;file://localhost{os.path.realpath(filename)}\033\\{filename}\033]8;;\033\\"
+    return f"\033]8;;{href}\033\\{text}\033]8;;\033\\"
     
+def filename_to_url(filename: str) -> str:
+    """
+    Turn a filename into a URL for use with an OSC-8 hyperlink.
+    """
+    
+    return f"file://localhost{os.path.realpath(filename)}"
+    
+def cid_to_url(blob_cid: CID) -> str:
+    """
+    Turn a blob CID into an HTTP URL on an IPFS gateway.
+    """
+    
+    return f"https://ipfs.io/ipfs/{blob_cid}"
+    
+def blob_link(db: Datastore, actor_did: str, blob_object: dict, link_text: str) -> str:
+    """
+    Turn a blob object into a clickable OSC-8 hyperlink.
+    Links to the blob on the local filesystem if possible, and on IPFS otherwise.
+    """
+    
+    blob_file = dump_blob_object(db, actor_did, blob_object)
+    if blob_file is not None:
+        # Link to local file on disk
+        return linkify(filename_to_url(blob_file), link_text + " (local)")
+    else:
+        # Link to file on IPFS via gateway, in hopes it is there.
+        blob_cid = blob_object.get('ref')
+        if blob_cid is None:
+            return "<No Ref>"
+        return linkify(cid_to_url(blob_cid), link_text + " (may be available in IPFS)")
+        
 def dump_action(db: dict, actor_did: str, cid: CID):
     """
     Dump a Bluesky social action (post, like, profile, etc.).
@@ -545,9 +576,7 @@ def dump_action(db: dict, actor_did: str, cid: CID):
         print("")
         if action.get('avatar'):
             # See if we can get the avatar
-            filename = dump_blob_object(db, actor_did, action['avatar'])
-            if filename:
-                print(f"Avatar: {linkify(filename)}")
+            print(blob_link(db, actor_did, action['avatar'], "View Avatar"))
     elif schema == 'app.bsky.feed.like':
         print(f"Liked post: {action['subject']['uri']}")
     elif schema == 'app.bsky.feed.post':
@@ -575,11 +604,7 @@ def dump_action(db: dict, actor_did: str, cid: CID):
             if embed['$type'] == 'app.bsky.embed.images':
                 print("With images:")
                 for image in embed['images']:
-                    filename = dump_blob_object(db, actor_did, image['image'])
-                    if filename:
-                        print(f"Image \"{image.get('alt', '')}\": {linkify(filename)}")
-                    else:
-                        print(f"Unavailable image: \"{image.get('alt', '')}\"")
+                    print(blob_link(db, actor_did, image['image'], f"View Image: \"{image.get('alt', '')}\""))
             elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
             elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
@@ -673,7 +698,7 @@ def main():
     parser.add_argument(
         '--blob_delay',
         type=float,
-        default=30.0,
+        default=1.0,
         help="Wait this long after downloading a blob to avoid annoying the server."
     )
     parser.add_argument(
