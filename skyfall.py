@@ -310,9 +310,9 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
                     filename = dump_blob(agent, actor_did, image['image'], image.get('alt') or "image", out_dir, blob_delay)
                     if filename:
                         print(f"Saved image to {linkify(filename)}")
-            elif embed['$type'] == 'app.bsky.embed.record':
+            elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
-            elif embed['$type'] == 'app.bsky.embed.recordWithMedia':
+            elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet with media of: {embed['record']['uri']}") 
             else:
                 print("With unknown embed:")
