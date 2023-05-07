@@ -545,7 +545,7 @@ def blob_link(db: Datastore, actor_did: str, blob_object: dict, link_text: str) 
         blob_cid = blob_object.get('ref')
         if blob_cid is None:
             return "<No Ref>"
-        return linkify(cid_to_url(blob_cid), link_text + " (may be available in IPFS)")
+        return linkify(cid_to_url(blob_cid), link_text + " (unavailabe, may be available in IPFS)")
         
 def dump_action(db: dict, actor_did: str, cid: CID):
     """
