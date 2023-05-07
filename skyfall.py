@@ -306,10 +306,11 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
             embed = action['embed']
             if embed['$type'] == 'app.bsky.embed.images':
                 print("With images:")
-                for image in embed['images']:
-                    filename = dump_blob(agent, actor_did, image['image'], image.get('alt') or "image", out_dir, blob_delay)
-                    if filename:
-                        print(f"Saved image to {linkify(filename)}")
+                if agent:
+                    for image in embed['images']:
+                        filename = dump_blob(agent, actor_did, image['image'], image.get('alt') or "image", out_dir, blob_delay)
+                        if filename:
+                            print(f"Saved image to {linkify(filename)}")
             elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
             elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
@@ -317,7 +318,8 @@ def dump_action(db: dict, actor_did: str, cid: CID, agent: Optional[BskyAgent] =
             else:
                 print("With unknown embed:")
                 pp.pprint(embed)
-        
+    elif schema == 'app.bsky.feed.repost':
+        print(f"Reskeeted: {action['subject'].get('uri')}")
     elif schema == 'app.bsky.graph.block':
         print(f"Blocked: {action['subject']}")
     elif schema == 'app.bsky.graph.follow':
