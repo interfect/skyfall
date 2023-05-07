@@ -6,7 +6,7 @@
 python3.9 -m virtualenv venv
 source venv/bin/activate
 pip install -r requirements.txt
-./skyfall whoever.bsky.social --out_dir whoever_data
+./skyfall whoever.bsky.social
 ```
 
 ## About
@@ -30,11 +30,12 @@ Enjoy(?) the future of social media today!
 ## Hot Tips and Known Issues
 
 * You may want to send the output to a file.
-* If you want to talk to a server othern than Jack Dorsey's™ Bluesky™, use the `--server` option with an HTTP URL.
-* Embedded images and the whole target profile's CAR archive will be dumped in the current directory by default. To put them somewhere else, use the `--out_dir` option.
-* You can re-load the CAR file by passing it to the script again, without re-downloading it.
+* If you want to talk to a server other than Jack Dorsey's™ Bluesky™, use the `--server` option with an HTTP URL.
+* Profile CAR archives, block data, and image blobs will be dumped in './store' by default, organized by profile DID, type, and hash prefix. To put them somewhere else, use the `--out_dir` option.
+* Sync is terrible but it *is* now an attempt at a sync; use the same `--out_dir` repeatedly to re-use existing data.
+* You can re-load a CAR file by passing it to the script again, without re-downloading it.
 * Use your powers for good, not evil. Bluesky as a community remains invite-only; things people posted there are possibly not yet intended to be widely distributed on the open Internet. This tool dumps whole repos because I was too lazy to write a UI, not so you can steal them and put them up for Google. Be respectful.
-* If you get too many(?) embeds too fast(?) (see the `--blob_delay` option), you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. See above point about being respectful, and maybe get a real client?
+* If you get too many(?) embeds too fast(?) (see the `--blob_delay` and `--skip_blobs` options), you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. See above point about being respectful, and maybe get a real client?
 * Information comes out in internal storage order: profile, likes, posts, blocks, follows. This is because I only barely got the Merkle Search Tree iterator working and did not want to implement the RocksDB-style range search on keys that you are really supposed to use.
 * `at://` URIs are not supported as arguments! Use just a handle or DID, and then hope you can find the particular thing being linked to in there somewhere.
 
