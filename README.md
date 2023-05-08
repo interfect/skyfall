@@ -56,7 +56,7 @@ Enjoy(?) the future of social media today!
 * You can re-load a CAR file by passing it to the script again, without re-downloading it.
 * Use your powers for good, not evil. Bluesky as a community remains invite-only; things people posted there are possibly not yet intended to be widely distributed on the open Internet. This tool dumps whole repos because I was too lazy to write a UI, not so you can steal them and put them up for Google. Be respectful.
 * When trying to fetch blobs, you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. It looks like Bluesky turned off their blob-serving API shortly after I implemented it. Perhaps it will come back soon. Other AT Protocol instances work fine.
-* Information comes out in internal storage order: profile, likes, posts, blocks, follows. This is because I only barely got the Merkle Search Tree iterator working and did not want to implement the RocksDB-style range search on keys that you are really supposed to use.
+* Information comes out organized by action type (so the profile, then all the skeets, then all the reskeets, etc.). This required implementing really annoying Merkle Search Tree reverse range queries.
 * `at://` URIs are not supported as arguments! Use just a handle or DID, and then hope you can find the particular thing being linked to in there somewhere.
 
 ## How does this work?
