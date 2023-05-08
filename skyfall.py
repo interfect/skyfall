@@ -612,11 +612,8 @@ class MerkleSearchTree:
             # Get the bottom frame
             node_object, index = stack[-1]
             
-            logger.debug(f"Handle index {index} at stack level {len(stack)}")
-            
             if index == -1:
                 # Nothing is left earlier in the tree at this level.
-                logger.debug(f"Nothing can be left of here")
                 stack.pop()
                 continue
             
@@ -625,23 +622,18 @@ class MerkleSearchTree:
             
             if len(item_keys) == 0:
                 # Node is empty somehow.
-                logger.debug(f"Node is empty")
                 stack.pop()
                 continue
             
             if before_key != item_keys[index]:
                 # Emit the item here, unless it is exactly the key
-                logger.debug(f"Yield the key")
                 yield item_keys[index], node_object['e'][index]['v']
                 emitted += 1
-            else:
-                logger.debug(f"Ignore key collision")
             
             # Move left
             index -= 1
             stack.pop()
             stack.append((node_object, index))
-            logger.debug(f"Move left to index {index}")
             
             if index >= 0:
                 # There is an item that might have a right subtree. If so, recurse into the right subtree as far as we can go.
@@ -649,7 +641,6 @@ class MerkleSearchTree:
             else:
                 # Start at the right edge of the left subtree, if any
                 child_node_cid = node_object.get('l')
-            logger.debug(f"Child at this index: {child_node_cid}")
             while child_node_cid is not None:
                 child_node_object = self.db.get_block(self.actor_did, child_node_cid)
                 if child_node_object is None:
@@ -657,12 +648,10 @@ class MerkleSearchTree:
                     return
                 
                 child_child_count = len(child_node_object['e'])
-                logger.debug(f"Child object with {child_child_count} children: {child_node_object}")
                 
                 # Start at the end of that child.
                 child_node_index = child_child_count - 1
                 stack.append((child_node_object, child_node_index))
-                logger.debug(f"Add stack frame depth {len(stack)} for child index {child_node_index}")
                 
                 # Then look in its rightmost child
                 if child_node_index == -1:
@@ -671,7 +660,6 @@ class MerkleSearchTree:
                 else:
                     # Rightmost child is in the right subtree of the last item, if any.
                     child_node_cid = child_node_object['e'][child_node_index].get('t')
-                logger.debug(f"Next child at that index: {child_node_cid}")
                     
     def find_before_from_collection(self, collection: bytes, before_key: bytes, limit: Optional[int] = 1) -> Iterator[Tuple[bytes, CID]]:
         """
@@ -856,14 +844,18 @@ def dump_repo(db: Datastore, actor_did: str, root_cid: CID):
         Dump a collection in reverse order.
         """
         for k, v in mst.find_before_from_collection(collection + b'/', collection + b'/' + MerkleSearchTree.TID_MAX, limit=None):
-            logger.debug(f"Found key {k} in collection {collection}")
             dump_action(db, actor_did, v)
-            logger.debug(f"Path: {[x[1] for x in mst._stack_to(k)]}")
             seen_keys.add(k)
     
+    # Do each kind of action, each in its own reverse-chronological order
+    
     print("")
-    print("Posts (newest first):")
+    print("Skeets (newest first):")
     dump_collection(b'app.bsky.feed.post')
+    
+    print("")
+    print("Reskeets (newest first):")
+    dump_collection(b'app.bsky.feed.repost')
     
     print("")
     print("Likes (newest first):")
@@ -877,14 +869,16 @@ def dump_repo(db: Datastore, actor_did: str, root_cid: CID):
     print("Blocks (newest first):")
     dump_collection(b'app.bsky.graph.block')
    
+   
+    # Then do a final scan over the whole tree forward, looking for anything we
+    # didn't manage to pull the first time.
     unhandled_count = 0
     extraneous_count = 0
-   
     for k, v in mst.items():
         if k not in seen_keys:
             logger.warning(f"Found unhandled key {k}")
             if k.startswith(b'app.bsky') and isinstance(v, CID):
-                # Looks like a bsky action or whatever they call it.
+                # Still looks like a bsky action so try and handle it.
                 dump_action(db, actor_did, v)
                 unhandled_count += 1
                 logger.warning(f"Path: {[x[1] for x in mst._stack_to(k)]}")
