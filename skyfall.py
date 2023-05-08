@@ -9,7 +9,7 @@ import sys
 import pprint
 import argparse
 import logging
-from typing import Any, Optional, Tuple, Iterator
+from typing import Any, Optional, Tuple, Iterator, List
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -449,6 +449,9 @@ class MerkleSearchTree:
     Keys are all bytes.
     """
     
+    # Maximum possible TID (ID for a record in a collection in the tree), probably
+    TID_MAX = b'\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff'
+    
     def __init__(self, db: Datastore, actor_did: str, root_cid: CID):
         """
         Make a new Merkel Search Tree for the given account, rooted at the
@@ -458,6 +461,20 @@ class MerkleSearchTree:
         self.db = db
         self.actor_did = actor_did
         self.root_cid = root_cid
+        
+    def _reconstruct_keys(self, node_object: dict) -> List[bytes]:
+        """
+        Given an MST node, construct the full keys for all its children.
+        """
+        
+        keys = []
+        key = b''
+        for entry in node_object['e']:
+            # Each key is a prefix of the last one, plus some new stuff.
+            key = key[:entry['p']] + entry['k']
+            keys.append(key)
+        
+        return keys
         
     def items(self) -> Iterator[Tuple[bytes, Any]]:
         """
@@ -476,16 +493,12 @@ class MerkleSearchTree:
                 for result in traverse(node_object['l']):
                     yield result
             
-            # Reset key prefix at every node.
-            key = b''
+            # Reconstruct all the keys for this node.
+            keys = self._reconstruct_keys(node_object)
             
             # Then do each item
-            for entry in node_object['e']:
-                # Compose the full key based on the key just to the left of
-                # here.
-                key = key[:entry['p']] + entry['k']
+            for key, entry in zip(keys, node_object['e']):
                 # Yield the key and the value
-                # TODO: Can't yield from caller here.
                 yield (key, entry['v'])
                 if 't' in entry and entry['t'] is not None:
                     # Recurse on the right subtree
@@ -493,9 +506,187 @@ class MerkleSearchTree:
                         yield result
             
         return traverse(self.root_cid)
+    
+    def _index_in_node(self, node_object: dict, target_key: bytes, entry_keys: Optional[List[bytes]] = None) -> int:
+        """
+        Given a node object, find the index at which the key would be.
         
+        -1: Before the first key
+        Any other number: at or after that child.
+        """
+        if entry_keys is not None:
+            # Re-use reconstructed keys
+            keys = entry_keys
+        else:
+            # Reconstruct keys ourselves.
+            keys = self._reconstruct_keys(node_object)
+        # TODO: Just do a linear scan for now.
+        # We could do binary search but this is like a 4-ary tree or something.
+        index = -1
+        for candidate_key in keys:
+            if candidate_key <= target_key:
+                index += 1
+        return index
+        
+    def _stack_to(self, target_key: bytes) -> List[Tuple[dict, int]]:
+        """
+        Get the stack of all node objects and child indexes down to the one containing or not containing the given key.
+        
+        The given key is either at the final index in the final node object, or not in the tree.
+        """
+        
+        stack = []
+        node_cid = self.root_cid
+        
+        while node_cid is not None:
+            # Get the object
+            node_object = self.db.get_block(self.actor_did, node_cid)
+            if node_object is None:
+                logger.error("Missing tree node")
+                return
+            # Get the keys at this node
+            entry_keys = self._reconstruct_keys(node_object)
+            # Get the index in the node (-1 for left subtree)
+            index = self._index_in_node(node_object, target_key, entry_keys=entry_keys)
+            # Put it on the stack
+            stack.append((node_object, index))
+            
+            if index == -1:
+                # Key is in the left subtree, so go to that node.
+                node_cid = node_object.get('l')
+            elif len(node_object.get('e', [])) == 0:
+                # Node has no entries. Tree is empty maybe?
+                node_cid = None
+            else:
+                # Key is in an entry or its right subtree
+                entry_key = entry_keys[index]
+                if target_key == entry_key:
+                    # We found it, stop here
+                    node_cid = None
+                else:
+                    # It's not here but it could be in the right subtree if any
+                    entry_object = node_object.get('e')[index]
+                    node_cid = entry_object.get('t')
+        
+        # Now we have stacked up the whole state of the search.
+        return stack
+        
+    def get(self, target_key: bytes) -> Optional[CID]:
+        """
+        Return the CID of the record at the given key, or None if the key is
+        not in the tree.
+        """
+        
+        # Do the whole search and just look at the last thing.
+        node_object, index = self._stack_to(target_key)[-1]
+        # So the key is either in this object at this entry, or not in the tree.
+        
+        if index == -1 or len(node_object.get('e', [])) == 0:
+            # It isn't here at all.
+            return None
+        
+        # Reconstruct the keys again. TODO: avoid repeating this?
+        item_keys = self._reconstruct_keys(node_object)
+        
+        if item_keys[index] == target_key:
+            # We actually have the item! Get the value!
+            return node_object['e'][index]['v']
+        else:
+            # The item would be in the right subtree of the item here, except
+            # that we stopped the search so we know it isn't. So it isn't in
+            # the tree.
+            return None
 
-
+    def find_before(self, before_key: bytes, limit: Optional[int] = 1) -> Iterator[Tuple[bytes, CID]]:
+        """
+        Yield pairs of keys and values in reverse order, starting with the
+        first key before the given key, and proceeding until the limit is
+        reached or we run out of keys.
+        """
+        
+        stack = self._stack_to(before_key)
+        
+        emitted = 0
+        
+        while len(stack) > 0 and (limit is None or emitted < limit):
+            # Get the bottom frame
+            node_object, index = stack[-1]
+            
+            logger.debug(f"Handle index {index} at stack level {len(stack)}")
+            
+            if index == -1:
+                # Nothing is left earlier in the tree at this level.
+                logger.debug(f"Nothing can be left of here")
+                stack.pop()
+                continue
+            
+            # Get the keys. TODO: Avoid repeating! This will be O(order^2!)
+            item_keys = self._reconstruct_keys(node_object)
+            
+            if len(item_keys) == 0:
+                # Node is empty somehow.
+                logger.debug(f"Node is empty")
+                stack.pop()
+                continue
+            
+            if before_key != item_keys[index]:
+                # Emit the item here, unless it is exactly the key
+                logger.debug(f"Yield the key")
+                yield item_keys[index], node_object['e'][index]['v']
+                emitted += 1
+            else:
+                logger.debug(f"Ignore key collision")
+            
+            # Move left
+            index -= 1
+            stack.pop()
+            stack.append((node_object, index))
+            logger.debug(f"Move left to index {index}")
+            
+            if index >= 0:
+                # There is an item that might have a right subtree. If so, recurse into the right subtree as far as we can go.
+                child_node_cid = node_object['e'][index].get('t')
+            else:
+                # Start at the right edge of the left subtree, if any
+                child_node_cid = node_object.get('l')
+            logger.debug(f"Child at this index: {child_node_cid}")
+            while child_node_cid is not None:
+                child_node_object = self.db.get_block(self.actor_did, child_node_cid)
+                if child_node_object is None:
+                    logger.error("Missing tree node")
+                    return
+                
+                child_child_count = len(child_node_object['e'])
+                logger.debug(f"Child object with {child_child_count} children: {child_node_object}")
+                
+                # Start at the end of that child.
+                child_node_index = child_child_count - 1
+                stack.append((child_node_object, child_node_index))
+                logger.debug(f"Add stack frame depth {len(stack)} for child index {child_node_index}")
+                
+                # Then look in its rightmost child
+                if child_node_index == -1:
+                    # Rightmost child is in the left subtree, if any
+                    child_node_cid = child_node_object.get('l')
+                else:
+                    # Rightmost child is in the right subtree of the last item, if any.
+                    child_node_cid = child_node_object['e'][child_node_index].get('t')
+                logger.debug(f"Next child at that index: {child_node_cid}")
+                    
+    def find_before_from_collection(self, collection: bytes, before_key: bytes, limit: Optional[int] = 1) -> Iterator[Tuple[bytes, CID]]:
+        """
+        Iterate over items in the given collection (i.e. starting with the
+        given key prefix), at or before the given key prefix, in reverse order.
+        Stops when an item not in the collection is encountered or after
+        producing limit items.
+        """
+        
+        for k, v in self.find_before(before_key, limit):
+            if not k.startswith(collection):
+                # Out of the collection!
+                return
+            yield k, v
+                
 def dump_blob_object(db: Datastore, actor_did: str, blob_object: dict) -> Optional[str]:
     """
     Dump a blob-referencing object to a filename. Return the filename, or None
@@ -647,22 +838,61 @@ def dump_repo(db: Datastore, actor_did: str, root_cid: CID):
     # See https://atproto.com/specs/atp#repo-data-layout
     mst = MerkleSearchTree(db, actor_did, data_cid)
     
-    print("")
-    print("Timeline:")
+    # We track the keys we interpreted normally
+    seen_keys = set()
     
-    action_count = 0
-    unknown_count = 0
-    
-    for k, v in mst.items():
-        if k.startswith(b'app.bsky') and isinstance(v, CID):
-            # Looks like a bsky action or whatever they call it.
+    profile_cid = mst.get(b'app.bsky.actor.profile/self')
+    if profile_cid is not None:
+        # Report the profile
+        print("")
+        print("Profile:")
+        dump_action(db, actor_did, profile_cid)
+        seen_keys.add(b'app.bsky.actor.profile/self')
+    else:
+        print("No profile found.")
+        
+    def dump_collection(collection: bytes):
+        """
+        Dump a collection in reverse order.
+        """
+        for k, v in mst.find_before_from_collection(collection + b'/', collection + b'/' + MerkleSearchTree.TID_MAX, limit=None):
+            logger.debug(f"Found key {k} in collection {collection}")
             dump_action(db, actor_did, v)
-            action_count += 1
-        else:
-            print(f"Unknown key: {repr(k)} with value {repr(v)}")
-            unknown_count += 1
+            logger.debug(f"Path: {[x[1] for x in mst._stack_to(k)]}")
+            seen_keys.add(k)
     
-    logger.info(f"Decoded {action_count} actions; failed to decode {unknown_count}")
+    print("")
+    print("Posts (newest first):")
+    dump_collection(b'app.bsky.feed.post')
+    
+    print("")
+    print("Likes (newest first):")
+    dump_collection(b'app.bsky.feed.like')
+    
+    print("")
+    print("Follows (newest first):")
+    dump_collection(b'app.bsky.graph.follow')
+    
+    print("")
+    print("Blocks (newest first):")
+    dump_collection(b'app.bsky.graph.block')
+   
+    unhandled_count = 0
+    extraneous_count = 0
+   
+    for k, v in mst.items():
+        if k not in seen_keys:
+            logger.warning(f"Found unhandled key {k}")
+            if k.startswith(b'app.bsky') and isinstance(v, CID):
+                # Looks like a bsky action or whatever they call it.
+                dump_action(db, actor_did, v)
+                unhandled_count += 1
+                logger.warning(f"Path: {[x[1] for x in mst._stack_to(k)]}")
+            else:
+                logger.error(f"Extraneous key: {repr(k)} with value {repr(v)}")
+                extraneous_count += 1
+            
+    logger.info(f"Handled {len(seen_keys)} actions; {unhandled_count} unhandled actions; found {extraneous_count} unusable keys")
             
 def decode_json(response: bytes) -> dict:
     """
