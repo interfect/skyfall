@@ -47,17 +47,29 @@ Although you can't see it on Github, Skyfall's output is enhanced with [the fine
 
 Enjoy(?) the future of social media today!
 
+## URI Support
+
+You can resolve `at://` URIs with Skyfall!
+
+For example:
+
+```
+./skyfall.py at://did:plc:mf5dzzqkp7fnmby6blfeljwj/app.bsky.feed.post/3jufymasfaw23
+```
+
+This will print out a single skeet, after downloading several tens of thousands of blocks from the poster's profile, and writing them all to files on your disk. This is useful for following chains of replies, reskeets, and quote-skeets. Truly, we are achieving new frontiers in technological progress.
+
 ## Hot Tips and Known Issues
 
 * You may want to send the output to a file.
 * If you want to talk to a server other than Jack Dorsey's™ Bluesky™, use the `--server` option with an HTTP URL.
 * Profile CAR archives, block data, and image blobs will be dumped in './store' by default, organized by profile DID, type, and hash prefix. To put them somewhere else, use the `--out_dir` option.
+* The datastore is terrible and stores every block as a file. Seemingly normal profiles have tens of thousands of blocks for a few thousand posts for no apparent reason. Try not to run out of inodes.
 * Sync is terrible but it *is* now an attempt at a sync; use the same `--out_dir` repeatedly to re-use existing data.
 * You can re-load a CAR file by passing it to the script again, without re-downloading it.
 * Use your powers for good, not evil. Bluesky as a community remains invite-only; things people posted there are possibly not yet intended to be widely distributed on the open Internet. This tool dumps whole repos because I was too lazy to write a UI, not so you can steal them and put them up for Google. Be respectful.
 * When trying to fetch blobs, you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. It looks like Bluesky turned off their blob-serving API shortly after I implemented it. Perhaps it will come back soon. Other AT Protocol instances work fine.
 * Information comes out organized by action type (so the profile, then all the skeets, then all the reskeets, etc.). This required implementing really annoying Merkle Search Tree reverse range queries.
-* `at://` URIs are not supported as arguments! Use just a handle or DID, and then hope you can find the particular thing being linked to in there somewhere.
 
 ## How does this work?
 

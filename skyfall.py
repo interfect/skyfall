@@ -210,6 +210,8 @@ def decode_car_of_dag_cbor(stream) -> dict:
     
     result = {"header": header}
     
+    item_count = 0
+    
     while len(stream.peek(1)) > 0:
         item_length = leb128.u.decode_reader(stream)[0]
         item = stream.read(item_length)
@@ -217,6 +219,13 @@ def decode_car_of_dag_cbor(stream) -> dict:
         cid_text, cid_byte_length = CID.decode_reader(io.BufferedReader(io.BytesIO(item)))
         # The item is DAG-CBOR
         result[cid_text] = decode_dag_cbor(item[cid_byte_length:])
+        
+        # Report progress since this can appear to hang...
+        item_count += 1
+        if item_count % 1000 == 0:
+            logger.debug(f"Decoded {item_count} blocks from CAR...")
+            
+    logger.debug(f"Decoded {item_count} total blocks from CAR")
         
     return result
     
@@ -401,12 +410,19 @@ class SyncingDatastore(DiskDatastore):
         # Now we read it back and insert it all.
         car_records = decode_car_of_dag_cbor(open(car_path, 'rb'))
         
+        logger.info(f"Storing {len(car_records) - 1} blocks from CAR into datastore...")
+        item_count = 0 
         for k, v in car_records.items():
             if k == 'header':
                 # Skip the header
                 continue
             # Store all the blocks in ourselves.
             self.put_block(actor_did, k, v)
+            # Report progress since this can appear to hang...
+            item_count += 1
+            if item_count % 1000 == 0:
+                logger.debug(f"Inserted {item_count} blocks into datastore...")
+        logger.debug(f"Inserted {item_count} total blocks into datastore")
             
         # Now try again, and fail if the block is missing.
         return super().get_block(actor_did, block_cid)
@@ -800,13 +816,12 @@ def dump_action(db: dict, actor_did: str, cid: CID):
     else:
         print(f'Unknown action: {schema}')
         pp.pprint(action)
-                
-def dump_repo(db: Datastore, actor_did: str, root_cid: CID):
+        
+def get_tree(db: Datastore, actor_did: str, root_cid: CID) -> Optional[MerkleSearchTree]:
     """
-    Given a repo with its actor and root, traverse it.
+    Get the MerkleSearchTree for an account, from the given root commit, if its
+    root is here.
     """
-    
-    pp = pprint.PrettyPrinter(indent=4)
     
     root = db.get_block(actor_did, root_cid)
     if root is None:
@@ -819,12 +834,19 @@ def dump_repo(db: Datastore, actor_did: str, root_cid: CID):
     data_cid = root['data']
     data = db.get_block(actor_did, data_cid)
     if data is None:
-        logger.error("Missing tree root")
-        return
+        # Tree isn't here
+        return None
         
     # Now we decode the Merkle Search Tree (MST).
     # See https://atproto.com/specs/atp#repo-data-layout
     mst = MerkleSearchTree(db, actor_did, data_cid)
+    
+    return mst
+                
+def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
+    """
+    Given a repo with its actor and their account tree, traverse it.
+    """
     
     # We track the keys we interpreted normally
     seen_keys = set()
@@ -906,7 +928,7 @@ def main():
     parser.add_argument(
         "target",
         type=str,
-        help="Handle ('somebody.bsky.social'), DID ('did:plc:xxxxx'), or .car filename to fetch feed from"
+        help="Handle ('somebody.bsky.social'), DID ('did:plc:xxxxx'), URI ('at://...'), or .car filename to fetch feed from"
     )
     parser.add_argument(
         '--out_dir',
@@ -987,6 +1009,16 @@ def main():
         if options.target.startswith('did:'):
             logger.info(f"Interpreting {options.target} as a DID.")
             actor_did = options.target
+            # Just get all keys
+            item_key = None
+        elif options.target.startswith('at://'):
+            # Like at://did:plc:uraielgolztbeqrrv5c7qbce/app.bsky.feed.post/3juuag73erg22
+            logger.info(f"Interpreting {options.target} as a URI.")
+            # Drop the prefix and split on the first slash
+            actor_did, item_key_string = options.target[5:].split('/', 1)
+            # And make sure the item key is bytes
+            item_key = item_key_string.encode('utf-8')
+            logger.info(f"Need to fetch {item_key} from profile with DID {actor_did}")
         else:
             logger.info(f"Interpreting {options.target} as a handle, because it does not exist as a file and does not start with 'did:'.")
             repo = options.target
@@ -999,7 +1031,8 @@ def main():
             did_response = decode_json(agent.com.atproto.identity.resolve_handle(handle=repo))
             actor_did = did_response['did']
             logger.info(f"Resolved {repo} to {actor_did}")
-        
+            # Just get all keys
+            item_key = None
         if options.root is not None:
             head_root = options.root
             logger.info(f"Using specific root: {head_root}")
@@ -1014,8 +1047,29 @@ def main():
             logger.info(f"Repo is rooted at {head_root}")
         
     # Now we always have head_root and actor_did
-    logger.info(f"Dumping feed rooted at {head_root} from repo for {actor_did}") 
-    dump_repo(data_store, actor_did, head_root)
+    
+    # Open up the tree (AKA database shard) for the actor
+    mst = get_tree(data_store, actor_did, head_root)
+    if mst is None:
+        # Root of MST tree is not available
+        logger.error("Account Merkle Search Tree root is not available")
+        sys.exit(1)
+    
+    if item_key is not None:
+        # We want a particular key
+        item = mst.get(item_key)
+        if item is None:
+            # It isn't there
+            logger.error(f"Item {item_key} not found in Merkle Search Tree")
+            sys.exit(1)
+        else:
+            # We found it
+            print(f"Single item {item_key}:")
+            dump_action(data_store, actor_did, item)
+            logger.info(f"Retrieved single item")
+    else:
+        logger.info(f"Dumping feed rooted at {head_root} from repo for {actor_did}") 
+        dump_repo(data_store, actor_did, mst)
 
 
 try:
