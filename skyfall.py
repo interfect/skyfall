@@ -250,7 +250,7 @@ class Datastore:
     Abstract interface for a place to put blocks (of feed data) and blobs (like images).
     """
     
-    def get_block(self, actor_did: str, block_cid: CID) -> Optional[dict]:
+    def get_block(self, actor_did: str, block_cid: CID, collection: Optional[str] = None, rkey: Optional[str] = None) -> Optional[dict]:
         raise NotImplementedError()
         
     def put_block(self, actor_did: str, block_cid: CID, block_data: dict):
@@ -307,10 +307,12 @@ class DiskDatastore(Datastore):
         return self._get_block_path(actor_did, blob_cid, store="blobs") + "." + extension_for_mime_type(mime_type)
         
     
-    def get_block(self, actor_did: str, block_cid: CID) -> Optional[dict]:
+    def get_block(self, actor_did: str, block_cid: CID, collection: Optional[str] = None, rkey: Optional[str] = None) -> Optional[dict]:
         """
         Get the decoded block from the repo for the given account, with the
         given CID, or None if it is not stored.
+        
+        Collection and rkey hints are ignored.
         """
         
         block_path = self._get_block_path(actor_did, block_cid)
@@ -383,9 +385,13 @@ class SyncingDatastore(DiskDatastore):
         self.blob_delay = blob_delay
         self.skip_blobs = skip_blobs
         
-    def get_block(self, actor_did: str, block_cid: CID) -> Optional[dict]:
+    def get_block(self, actor_did: str, block_cid: CID, collection: Optional[str] = None, rkey: Optional[str] = None) -> Optional[dict]:
         """
         Get the block from the local store. If not there, sync it and related blocks.
+        
+        If collection and rkey are set, use them to request just the blocks for
+        the relevant record. Otherwise, sync the whole repo if the block isn't
+        found.
         """
         
         block = super().get_block(actor_did, block_cid)
@@ -393,19 +399,26 @@ class SyncingDatastore(DiskDatastore):
             return block
         
         # Now we need to sync it
-        # TODO: Implement sync based on what we already have for this DID. For now just get the whole repo.
         
-        logger.info(f"Get CAR file for repo {actor_did}")
+        if collection is not None and rkey is not None:
+            logger.info(f"Get CAR file for blocks for collection {collection} and rkey {rkey}")
+            # Most records won't be synced like this so we don't need to spray across directories hopefully.
+            car_path = os.path.join(self.root_dir, 'records', self.did_to_path(actor_did), str(block_cid) + '.car')
+            car_bytes = self.agent.com.atproto.sync.get_record(did=actor_did, collection=collection, rkey=rkey)
+        else:
+            # TODO: Implement sync based on what we already have for this DID. For now just get the whole repo.
+            logger.info(f"Get CAR file for repo {actor_did}")
+            car_path = os.path.join(self.root_dir, 'repos', self.did_to_path(actor_did) + '.car')
+            # TODO: This is probably big; the library should maybe hand back a stream
+            # here?
+            car_bytes = self.agent.com.atproto.sync.get_repo(did=actor_did)
         
-        car_path = os.path.join(self.root_dir, 'repos', self.did_to_path(actor_did) + '.car')
-        os.makedirs(os.path.dirname(car_path), exist_ok=True)
-        # TODO: This is probably big; the library should maybe hand back a stream
-        # here?
-        car_bytes = self.agent.com.atproto.sync.get_repo(did=actor_did)
+        os.makedirs(os.path.dirname(car_path), exist_ok=True) 
         open(car_path + '.tmp', 'wb').write(car_bytes)
+        # Drop from memory
         del car_bytes
         os.rename(car_path + '.tmp', car_path)
-        logger.info(f"Saved feed data to {car_path}")
+        logger.info(f"Saved CAR to {car_path}")
         
         # Now we read it back and insert it all.
         car_records = decode_car_of_dag_cbor(open(car_path, 'rb'))
@@ -725,23 +738,94 @@ def cid_to_url(blob_cid: CID) -> str:
     
     return f"https://ipfs.io/ipfs/{blob_cid}"
     
-def blob_link(db: Datastore, actor_did: str, blob_object: dict, link_text: str) -> str:
+def blob_link(db: Datastore, actor_did: str, blob_object: dict, link_text: str, alt_text: str) -> str:
     """
     Turn a blob object into a clickable OSC-8 hyperlink.
-    Links to the blob on the local filesystem if possible, and on IPFS otherwise.
+    Links to the blob on the local filesystem if possible.
+    If the blob is not available, displays the alt text.
     """
     
     blob_file = dump_blob_object(db, actor_did, blob_object)
     if blob_file is not None:
         # Link to local file on disk
-        return linkify(filename_to_url(blob_file), link_text + " (local)")
+        return linkify(filename_to_url(blob_file), link_text)
     else:
-        # Link to file on IPFS via gateway, in hopes it is there.
-        blob_cid = blob_object.get('ref')
-        if blob_cid is None:
-            return "<No Ref>"
-        return linkify(cid_to_url(blob_cid), link_text + " (unavailabe, may be available in IPFS)")
+        return alt_text
         
+def handle_post(action: dict, actor: str= ""):
+    """
+    Nicely format a skeet used to give context to another skeet.
+    """
+    pp = pprint.PrettyPrinter(indent=4)
+    print(f"     > {actor} Skeeted:")
+    print("")
+    formatted = re.sub('\n', '\n    > ', action['text'])
+    print(f"     > {formatted}")
+    print("")
+    if 'reply' in action:
+        # This is a reply
+        print(f"     > In reply to: {action['reply']['parent']['uri']}")
+        if action['reply']['parent']['uri'] != action['reply']['root']['uri']:
+            print(f"     > In thread: {action['reply']['root']['uri']}")
+    for facet in action.get('facets', []):
+        # It has a link or something. Facets have text ranges and a
+        # collection of features.
+        for feature in facet.get('features', []):
+            if feature['$type'] == 'app.bsky.richtext.facet#link':
+                print(f"     > With link to: {feature['uri']}")
+            else:
+                print("    > With unknown feature:")
+                print("    > ", re.sub("\n", "\n    > ", pp.pformat(feature)))
+    if 'embed' in action:
+        # It comes with a file or something.
+        embed = action['embed']
+        if embed['$type'] == 'app.bsky.embed.images':
+            print("    > With images:")
+            for image in embed['images']:
+                if image.get('alt', False):
+                    print(f"    >   {image['alt']}")
+        elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
+            print(f"    > As a quote-skeet of: {embed['record']['uri']}")
+        elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
+            print(f"     > As a quote-skeet with media of: {embed['record']['uri']}")
+        else:
+            print("    > With unknown embed:")
+            print("    > ", re.sub("\n", "\n    > ", pp.pformat(embed)))
+
+def get_and_dump_record(db: Datastore, uri: str, cid: str):
+    """
+    Go get and report a record that is used to give context to another record.
+    """
+    pp = pprint.PrettyPrinter(indent=4)
+    try:
+        did, nsi, rkey = re.split("/", re.sub("^at://", "", uri))
+        # This will get the record if it is not found, without also getting the
+        # whole other repo.
+        action = db.get_block(did, cid, collection=nsi, rkey=rkey)
+    except HTTPError as e:
+        # Print the response body
+        print('    > Error getting record. %s' % e.read())
+        return
+    except Exception as e:
+        print('    > Error getting record. %s' % e)
+        return
+
+    if not action:
+        print(f"{uri} not found")
+        return
+    if '$type' not in action:
+        print("    > Not an action")
+        return
+    schema = action['$type']
+    if schema == 'app.bsky.feed.post':
+        handle_post(action, actor=did)
+    elif schema == 'app.bsky.feed.repost':
+        print(f"    > {did} Reskeeted: {action['subject'].get('uri')}")
+    else:
+        print(f'    > {did} Unknown action: {schema}')
+        pp.pprint(action)
+
+
 def dump_action(db: dict, actor_did: str, cid: CID):
     """
     Dump a Bluesky social action (post, like, profile, etc.).
@@ -770,10 +854,12 @@ def dump_action(db: dict, actor_did: str, cid: CID):
         print(action.get('description'))
         print("")
         if action.get('avatar'):
-            # See if we can get the avatar
-            print(blob_link(db, actor_did, action['avatar'], "View Avatar"))
+            # See if we can get the avatar.
+            # If it isn't downloaded and --skip_blobs is set, we won't have it.
+            print(blob_link(db, actor_did, action['avatar'], "View Avatar", "Avatar unavailable"))
     elif schema == 'app.bsky.feed.like':
         print(f"Liked post: {action['subject']['uri']}")
+        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
     elif schema == 'app.bsky.feed.post':
         print("Skeeted:")
         print("")
@@ -782,10 +868,12 @@ def dump_action(db: dict, actor_did: str, cid: CID):
         if 'reply' in action:
             # This is a reply
             print(f"In reply to: {action['reply']['parent']['uri']}")
+            get_and_dump_record(db, uri=action['reply']['parent']['uri'], cid=action['reply']['parent']['cid'])
             if action['reply']['parent']['uri'] != action['reply']['root']['uri']:
                 print(f"In thread: {action['reply']['root']['uri']}")
+                get_and_dump_record(db, uri=action['reply']['root']['uri'], cid=action['reply']['root']['cid'])
         for facet in action.get('facets', []):
-            # It has a link or something. Facest have text ranges and a
+            # It has a link or something. Facets have text ranges and a
             # collection of features.
             for feature in facet.get('features', []):
                 if feature['$type'] == 'app.bsky.richtext.facet#link':
@@ -797,18 +885,24 @@ def dump_action(db: dict, actor_did: str, cid: CID):
             # It comes with a file or something.
             embed = action['embed']
             if embed['$type'] == 'app.bsky.embed.images':
-                print("With images:")
+                print("With images")
                 for image in embed['images']:
-                    print(blob_link(db, actor_did, image['image'], f"View Image: \"{image.get('alt', '')}\""))
+                    # See if we can get the image.
+                    # If it isn't downloaded and --skip_blobs is set, we won't have it.
+                    desc = image.get('alt') or "(Undescribed image)"
+                    print("  ", blob_link(db, actor_did, image['image'], f"View Image: {desc}", desc))
             elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
+                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
             elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
-                print(f"As a quote-skeet with media of: {embed['record']['uri']}") 
+                print(f"As a quote-skeet with media of: {embed['record']['uri']}")
+                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
             else:
                 print("With unknown embed:")
                 pp.pprint(embed)
     elif schema == 'app.bsky.feed.repost':
         print(f"Reskeeted: {action['subject'].get('uri')}")
+        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
     elif schema == 'app.bsky.graph.block':
         print(f"Blocked: {action['subject']}")
     elif schema == 'app.bsky.graph.follow':
@@ -866,6 +960,7 @@ def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
         Dump a collection in reverse order.
         """
         for k, v in mst.find_before_from_collection(collection + b'/', collection + b'/' + MerkleSearchTree.TID_MAX, limit=None):
+            print(k)
             dump_action(db, actor_did, v)
             seen_keys.add(k)
     
@@ -910,6 +1005,7 @@ def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
             
     logger.info(f"Handled {len(seen_keys)} actions; {unhandled_count} unhandled actions; found {extraneous_count} unusable keys")
             
+
 def decode_json(response: bytes) -> dict:
     """
     Decode JSON bytes to a dict structure.
