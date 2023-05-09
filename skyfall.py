@@ -791,6 +791,9 @@ def handle_post(action: dict, actor: str= ""):
             print(f"     > As a quote-skeet of: {embed['record']['uri']}")
         elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
             print(f"     > As a quote-skeet with media of: {embed['record']['uri']}")
+        elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'record' in embed['record'] and 'uri' in embed['record']['record']:
+            # TODO: how deep can these nest???
+            print(f"     > As a quote-skeet with media of: {embed['record']['record']['uri']}")
         else:
             print("     > With unknown embed:")
             print("     > ", re.sub("\n", "\n     > ", pp.pformat(embed)))
