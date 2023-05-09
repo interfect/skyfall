@@ -406,12 +406,15 @@ class SyncingDatastore(DiskDatastore):
             car_path = os.path.join(self.root_dir, 'records', self.did_to_path(actor_did), str(block_cid) + '.car')
             car_bytes = self.agent.com.atproto.sync.get_record(did=actor_did, collection=collection, rkey=rkey)
         else:
-            # TODO: Implement sync based on what we already have for this DID. For now just get the whole repo.
+            # TODO: Implement sync based on what we already have for this DID.
+            # For now just get the *current checkout* of the whole repo.
             logger.info(f"Get CAR file for repo {actor_did}")
             car_path = os.path.join(self.root_dir, 'repos', self.did_to_path(actor_did) + '.car')
+            # TODO: handle the case where the checkout has changed since we got the HEAD we were looking for.
+            
             # TODO: This is probably big; the library should maybe hand back a stream
             # here?
-            car_bytes = self.agent.com.atproto.sync.get_repo(did=actor_did)
+            car_bytes = self.agent.com.atproto.sync.get_checkout(did=actor_did)
         
         os.makedirs(os.path.dirname(car_path), exist_ok=True) 
         open(car_path + '.tmp', 'wb').write(car_bytes)
