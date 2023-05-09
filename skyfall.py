@@ -762,7 +762,7 @@ def handle_post(action: dict, actor: str= ""):
     pp = pprint.PrettyPrinter(indent=4)
     print(f"     > {actor} Skeeted:")
     print("")
-    formatted = re.sub('\n', '\n    > ', action['text'])
+    formatted = re.sub('\n', '\n     > ', action['text'])
     print(f"     > {formatted}")
     print("")
     if 'reply' in action:
@@ -778,7 +778,7 @@ def handle_post(action: dict, actor: str= ""):
                 print(f"     > With link to: {feature['uri']}")
             else:
                 print("    > With unknown feature:")
-                print("    > ", re.sub("\n", "\n    > ", pp.pformat(feature)))
+                print("    > ", re.sub("\n", "\n     > ", pp.pformat(feature)))
     if 'embed' in action:
         # It comes with a file or something.
         embed = action['embed']
@@ -788,12 +788,12 @@ def handle_post(action: dict, actor: str= ""):
                 if image.get('alt', False):
                     print(f"    >   {image['alt']}")
         elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
-            print(f"    > As a quote-skeet of: {embed['record']['uri']}")
+            print(f"     > As a quote-skeet of: {embed['record']['uri']}")
         elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
             print(f"     > As a quote-skeet with media of: {embed['record']['uri']}")
         else:
-            print("    > With unknown embed:")
-            print("    > ", re.sub("\n", "\n    > ", pp.pformat(embed)))
+            print("     > With unknown embed:")
+            print("     > ", re.sub("\n", "\n     > ", pp.pformat(embed)))
 
 def get_and_dump_record(db: Datastore, uri: str, cid: str):
     """
