@@ -39,8 +39,8 @@ Durand Jones & the Indications - Is It Any Wonder?
 https://www.youtube.com/watch?v=hIHxDxTcuDk
 
 With link to: https://www.youtube.com/watch?v=hIHxDxTcuDk
-With images:
-View Image: "" (local)
+With images
+   View Image: (Undescribed image)
 ```
 
 Although you can't see it on Github, Skyfall's output is enhanced with [the finest in terminal hyperlink technology](https://github.com/Alhadis/OSC8-Adoption/), allowing you to click on a link in your terminal and be *literally transported* to its destination in mere milliseconds!
@@ -61,6 +61,7 @@ This will print out a single skeet, after downloading several tens of thousands 
 
 ## Hot Tips and Known Issues
 
+* Re-skeeted skeets and similar content from other accounts is now included thanks to @hamnox! To skip these, use `--skp_records`.
 * You may want to send the output to a file.
 * If you want to talk to a server other than Jack Dorsey's™ Bluesky™, use the `--server` option with an HTTP URL.
 * Profile CAR archives, block data, and image blobs will be dumped in './store' by default, organized by profile DID, type, and hash prefix. To put them somewhere else, use the `--out_dir` option.

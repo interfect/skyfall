@@ -378,7 +378,7 @@ class SyncingDatastore(DiskDatastore):
         """
         Make a data store storing data at the given path, and using the given agent to fetch unavailable data.
         
-        Wait blob_delay after successfully fetching a blob.
+        Wait blob_delay after successfully fetching a blob. If skip_blobs is True, don't fetch blobs.
         """
         super().__init__(root_dir)
         self.agent = agent
@@ -826,9 +826,12 @@ def get_and_dump_record(db: Datastore, uri: str, cid: str):
         pp.pprint(action)
 
 
-def dump_action(db: dict, actor_did: str, cid: CID):
+def dump_action(db: dict, actor_did: str, cid: CID, skip_records: bool = False):
     """
     Dump a Bluesky social action (post, like, profile, etc.).
+    
+    If skip_records is true, don't fetch and inline reskeeted/liked/replied-to
+    records.
     """
     
     pp = pprint.PrettyPrinter(indent=4)
@@ -859,7 +862,8 @@ def dump_action(db: dict, actor_did: str, cid: CID):
             print(blob_link(db, actor_did, action['avatar'], "View Avatar", "Avatar unavailable"))
     elif schema == 'app.bsky.feed.like':
         print(f"Liked post: {action['subject']['uri']}")
-        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
+        if not skip_records:
+            get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
     elif schema == 'app.bsky.feed.post':
         print("Skeeted:")
         print("")
@@ -868,10 +872,12 @@ def dump_action(db: dict, actor_did: str, cid: CID):
         if 'reply' in action:
             # This is a reply
             print(f"In reply to: {action['reply']['parent']['uri']}")
-            get_and_dump_record(db, uri=action['reply']['parent']['uri'], cid=action['reply']['parent']['cid'])
+            if not skip_records:
+                get_and_dump_record(db, uri=action['reply']['parent']['uri'], cid=action['reply']['parent']['cid'])
             if action['reply']['parent']['uri'] != action['reply']['root']['uri']:
                 print(f"In thread: {action['reply']['root']['uri']}")
-                get_and_dump_record(db, uri=action['reply']['root']['uri'], cid=action['reply']['root']['cid'])
+                if not skip_records:
+                    get_and_dump_record(db, uri=action['reply']['root']['uri'], cid=action['reply']['root']['cid'])
         for facet in action.get('facets', []):
             # It has a link or something. Facets have text ranges and a
             # collection of features.
@@ -893,16 +899,19 @@ def dump_action(db: dict, actor_did: str, cid: CID):
                     print("  ", blob_link(db, actor_did, image['image'], f"View Image: {desc}", desc))
             elif embed['$type'] == 'app.bsky.embed.record' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet of: {embed['record']['uri']}")
-                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
+                if not skip_records:
+                    get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
             elif embed['$type'] == 'app.bsky.embed.recordWithMedia' and 'record' in embed and 'uri' in embed['record']:
                 print(f"As a quote-skeet with media of: {embed['record']['uri']}")
-                get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
+                if not skip_records:
+                    get_and_dump_record(db, uri=embed['record']['uri'], cid=embed['record']['cid'])
             else:
                 print("With unknown embed:")
                 pp.pprint(embed)
     elif schema == 'app.bsky.feed.repost':
         print(f"Reskeeted: {action['subject'].get('uri')}")
-        get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
+        if not skip_records:
+            get_and_dump_record(db, uri=action['subject']['uri'], cid=action['subject']['cid'])
     elif schema == 'app.bsky.graph.block':
         print(f"Blocked: {action['subject']}")
     elif schema == 'app.bsky.graph.follow':
@@ -937,9 +946,11 @@ def get_tree(db: Datastore, actor_did: str, root_cid: CID) -> Optional[MerkleSea
     
     return mst
                 
-def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
+def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree, skip_records: bool = False):
     """
     Given a repo with its actor and their account tree, traverse it.
+    
+    If skip_records is True, don't include referenced content.
     """
     
     # We track the keys we interpreted normally
@@ -950,7 +961,7 @@ def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
         # Report the profile
         print("")
         print("Profile:")
-        dump_action(db, actor_did, profile_cid)
+        dump_action(db, actor_did, profile_cid, skip_records=skip_records)
         seen_keys.add(b'app.bsky.actor.profile/self')
     else:
         print("No profile found.")
@@ -960,8 +971,7 @@ def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
         Dump a collection in reverse order.
         """
         for k, v in mst.find_before_from_collection(collection + b'/', collection + b'/' + MerkleSearchTree.TID_MAX, limit=None):
-            print(k)
-            dump_action(db, actor_did, v)
+            dump_action(db, actor_did, v, skip_records=skip_records)
             seen_keys.add(k)
     
     # Do each kind of action, each in its own reverse-chronological order
@@ -996,7 +1006,7 @@ def dump_repo(db: Datastore, actor_did: str, mst: MerkleSearchTree):
             logger.warning(f"Found unhandled key {k}")
             if k.startswith(b'app.bsky') and isinstance(v, CID):
                 # Still looks like a bsky action so try and handle it.
-                dump_action(db, actor_did, v)
+                dump_action(db, actor_did, v, skip_records=skip_records)
                 unhandled_count += 1
                 logger.warning(f"Path: {[x[1] for x in mst._stack_to(k)]}")
             else:
@@ -1047,6 +1057,11 @@ def main():
         '--skip_blobs',
         action='store_true',
         help="Don't download blobs from the server"
+    )
+    parser.add_argument(
+        '--skip_records',
+        action='store_true',
+        help="Don't download referenced content (re-skeeted skeets, etc.)"
     )
     parser.add_argument(
         '--local',
@@ -1161,11 +1176,11 @@ def main():
         else:
             # We found it
             print(f"Single item {item_key}:")
-            dump_action(data_store, actor_did, item)
+            dump_action(data_store, actor_did, item, skip_records=options.skip_records)
             logger.info(f"Retrieved single item")
     else:
         logger.info(f"Dumping feed rooted at {head_root} from repo for {actor_did}") 
-        dump_repo(data_store, actor_did, mst)
+        dump_repo(data_store, actor_did, mst, skip_records=options.skip_records)
 
 
 try:
