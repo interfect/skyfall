@@ -385,6 +385,30 @@ class SyncingDatastore(DiskDatastore):
         self.blob_delay = blob_delay
         self.skip_blobs = skip_blobs
         
+    def sync_record(self, actor_did: str, collection: str, rkey: str, block_cid: Optional[CID] = None):
+        """
+        Sync a particular record from a collection in an account. Skip if the given CID is alreasy availabe.
+        """
+        
+        if block_cid is not None and super().get_block(actor_did, block_cid) is not None:
+            # We have the block already, no need to sync.
+            return
+            
+        logger.info(f"Get CAR file for blocks for collection {collection} and rkey {rkey}")
+        # Most records won't be synced like this so we don't need to spray across directories hopefully.
+        car_path = os.path.join(self.root_dir, 'records', self.did_to_path(actor_did), str(block_cid) + '.car')
+        car_bytes = self.agent.com.atproto.sync.get_record(did=actor_did, collection=collection, rkey=rkey)
+        
+        os.makedirs(os.path.dirname(car_path), exist_ok=True) 
+        open(car_path + '.tmp', 'wb').write(car_bytes)
+        # Drop from memory
+        del car_bytes
+        os.rename(car_path + '.tmp', car_path)
+        logger.info(f"Saved CAR to {car_path}")
+        
+        self.sync_car(actor_did, car_path)
+        
+    
     def get_block(self, actor_did: str, block_cid: CID, collection: Optional[str] = None, rkey: Optional[str] = None) -> Optional[dict]:
         """
         Get the block from the local store. If not there, sync it and related blocks.
@@ -401,27 +425,42 @@ class SyncingDatastore(DiskDatastore):
         # Now we need to sync it
         
         if collection is not None and rkey is not None:
-            logger.info(f"Get CAR file for blocks for collection {collection} and rkey {rkey}")
-            # Most records won't be synced like this so we don't need to spray across directories hopefully.
-            car_path = os.path.join(self.root_dir, 'records', self.did_to_path(actor_did), str(block_cid) + '.car')
-            car_bytes = self.agent.com.atproto.sync.get_record(did=actor_did, collection=collection, rkey=rkey)
-        else:
-            # TODO: Implement sync based on what we already have for this DID.
-            # For now just get the *current checkout* of the whole repo.
-            logger.info(f"Get CAR file for repo {actor_did}")
-            car_path = os.path.join(self.root_dir, 'repos', self.did_to_path(actor_did) + '.car')
-            # TODO: handle the case where the checkout has changed since we got the HEAD we were looking for.
+            # Try syncing the record with the hint.
+            self.sync_record(actor_did, collection, rkey)
             
-            # TODO: This is probably big; the library should maybe hand back a stream
-            # here?
-            car_bytes = self.agent.com.atproto.sync.get_checkout(did=actor_did)
+            block = super().get_block(actor_did, block_cid)
+            if block is not None:
+                return block
+            else:
+                logger.info(f"Failed to find {block_cid} at {collection}/{rkey}")
+            
+        # TODO: Implement sync based on what we already have for this DID.
+        # For now just get the *current checkout* of the whole repo.
+        logger.info(f"Get CAR file for repo {actor_did}")
+        car_path = os.path.join(self.root_dir, 'repos', self.did_to_path(actor_did) + '.car')
+        # TODO: handle the case where the checkout has changed since we got the HEAD we were looking for.
         
+        # TODO: This is probably big; the library should maybe hand back a stream
+        # here?
+        car_bytes = self.agent.com.atproto.sync.get_checkout(did=actor_did)
+    
         os.makedirs(os.path.dirname(car_path), exist_ok=True) 
         open(car_path + '.tmp', 'wb').write(car_bytes)
         # Drop from memory
         del car_bytes
         os.rename(car_path + '.tmp', car_path)
         logger.info(f"Saved CAR to {car_path}")
+        
+        self.sync_car(actor_did, car_path)
+        
+        # Now try again, and fail if the block is missing.
+        return super().get_block(actor_did, block_cid)
+        
+        
+    def sync_car(self, actor_did: str, car_path: str):
+        """
+        Sync all the blocks from the given CAR file.
+        """
         
         # Now we read it back and insert it all.
         car_records = decode_car_of_dag_cbor(open(car_path, 'rb'))
@@ -440,9 +479,6 @@ class SyncingDatastore(DiskDatastore):
                 logger.debug(f"Inserted {item_count} blocks into datastore...")
         logger.debug(f"Inserted {item_count} total blocks into datastore")
             
-        # Now try again, and fail if the block is missing.
-        return super().get_block(actor_did, block_cid)
-        
     def get_blob_file(self, actor_did: str, blob_cid: CID, mime_type: Optional[str]) -> Optional[str]:
         """
         Get the blob file from the local store. If not there, sync it.
@@ -1130,12 +1166,31 @@ def main():
             item_key = None
         elif options.target.startswith('at://'):
             # Like at://did:plc:uraielgolztbeqrrv5c7qbce/app.bsky.feed.post/3juuag73erg22
+            # Also we attempt to support
+            # at://drdan.bsky.social/post/3jvdhl4mvy52k like you might
+            # copy-paste from the Bluesky web UI.
             logger.info(f"Interpreting {options.target} as a URI.")
             # Drop the prefix and split on the first slash
             actor_did, item_key_string = options.target[5:].split('/', 1)
-            # And make sure the item key is bytes
-            item_key = item_key_string.encode('utf-8')
-            logger.info(f"Need to fetch {item_key} from profile with DID {actor_did}")
+            
+            if not actor_did.startswith('did:'):
+                # Allow URLs with handles in them to make it easy to copy-paste
+                # from the Bluesky web client.
+                if agent is None:
+                    # We really need the network for this.
+                    logger.critical("Cannot resolve a handle locally.")
+                    sys.exit(1)
+                 
+                repo = actor_did
+                did_response = decode_json(agent.com.atproto.identity.resolve_handle(handle=repo))
+                actor_did = did_response['did']
+                logger.info(f"Resolved {repo} to {actor_did}")
+                
+            if '.' not in item_key_string:
+                # Maybe this is just e.g. "post"
+                item_key_string = 'app.bsky.feed.' + item_key_string
+                
+            logger.info(f"Need to fetch {item_key_string} from profile with DID {actor_did}")
         else:
             logger.info(f"Interpreting {options.target} as a handle, because it does not exist as a file and does not start with 'did:'.")
             repo = options.target
@@ -1149,7 +1204,8 @@ def main():
             actor_did = did_response['did']
             logger.info(f"Resolved {repo} to {actor_did}")
             # Just get all keys
-            item_key = None
+            item_key_string = None
+        
         if options.root is not None:
             head_root = options.root
             logger.info(f"Using specific root: {head_root}")
@@ -1165,6 +1221,15 @@ def main():
         
     # Now we always have head_root and actor_did
     
+    if item_key_string is not None:
+        # We want a particular key. Pre-fetch it alone to maybe avoid syncing
+        # the whole checkout.
+        
+        # Split the key into a collection and a record key
+        collection, rkey = item_key_string.split('/')
+        # Hackily fetch the record
+        data_store.sync_record(actor_did, collection, rkey)
+    
     # Open up the tree (AKA database shard) for the actor
     mst = get_tree(data_store, actor_did, head_root)
     if mst is None:
@@ -1172,16 +1237,17 @@ def main():
         logger.error("Account Merkle Search Tree root is not available")
         sys.exit(1)
     
-    if item_key is not None:
+    if item_key_string is not None:
         # We want a particular key
-        item = mst.get(item_key)
+        
+        item = mst.get(item_key_string.encode('utf-8'))
         if item is None:
             # It isn't there
-            logger.error(f"Item {item_key} not found in Merkle Search Tree")
+            logger.error(f"Item {item_key_string} not found in Merkle Search Tree")
             sys.exit(1)
         else:
             # We found it
-            print(f"Single item {item_key}:")
+            print(f"Single item {item_key_string}:")
             dump_action(data_store, actor_did, item, skip_records=options.skip_records)
             logger.info(f"Retrieved single item")
     else:

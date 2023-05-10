@@ -69,7 +69,7 @@ This will print out a single skeet, after downloading several tens of thousands 
 * Sync is terrible but it *is* now an attempt at a sync; use the same `--out_dir` repeatedly to re-use existing data.
 * You can re-load a CAR file by passing it to the script again, without re-downloading it.
 * Use your powers for good, not evil. Bluesky as a community remains invite-only; things people posted there are possibly not yet intended to be widely distributed on the open Internet. This tool dumps whole repos because I was too lazy to write a UI, not so you can steal them and put them up for Google. Be respectful.
-* When trying to fetch blobs, you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. It looks like Bluesky turned off their blob-serving API shortly after I implemented it. Perhaps it will come back soon. Other AT Protocol instances work fine.
+* When trying to fetch blobs, you may see something like: `{"error":"InvalidRequest","message":"Temporarily disabled: com.atproto.sync.getBlob"}`. Sometimes Bluesky turns off their blob server, but it seems to be up right now. 
 * Information comes out organized by action type (so the profile, then all the skeets, then all the reskeets, etc.). This required implementing really annoying Merkle Search Tree reverse range queries.
 
 ## How does this work?
